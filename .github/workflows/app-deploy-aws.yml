@@ -1,6 +1,7 @@
 name: AWS App Deploy (ECS + S3)
 
 on:
+  workflow_dispatch:
   push:
     branches: [ "dev", "staging", "main" ]
 
