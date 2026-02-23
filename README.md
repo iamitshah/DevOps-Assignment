@@ -1,125 +1,88 @@
-# DevOps Assignment
+DevOps Assignment — Production-grade Deployment
+Repository
 
-This project consists of a FastAPI backend and a Next.js frontend that communicates with the backend.
+Fork: https://github.com/PG-AGI/DevOps-Assignment
 
-## Project Structure
+Live URLs (AWS)
 
-```
-.
-├── backend/               # FastAPI backend
-│   ├── app/
-│   │   └── main.py       # Main FastAPI application
-│   └── requirements.txt    # Python dependencies
-└── frontend/              # Next.js frontend
-    ├── pages/
-    │   └── index.js     # Main page
-    ├── public/            # Static files
-    └── package.json       # Node.js dependencies
-```
+DEV
 
-## Prerequisites
+Frontend: https://dev.testingproject.online
 
-- Python 3.8+
-- Node.js 16+
-- npm or yarn
+Backend: https://api-dev.testingproject.online/api/health
 
-## Backend Setup
+STAGING
 
-1. Navigate to the backend directory:
-   ```bash
-   cd backend
-   ```
+Frontend: https://staging.testingproject.online
 
-2. Create a virtual environment (recommended):
-   ```bash
-   python -m venv venv
-   source venv/bin/activate  # On Windows: .\venv\Scripts\activate
-   ```
+Backend: https://api-staging.testingproject.online/api/health
 
-3. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+PROD
 
-4. Run the FastAPI server:
-   ```bash
-   uvicorn app.main:app --reload --port 8000
-   ```
+Frontend: https://testingproject.online
 
-   The backend will be available at `http://localhost:8000`
+Backend: https://api.testingproject.online/api/health
 
-## Frontend Setup
+External Documentation (Google Doc)   ->    (https://docs.google.com/document/d/1g9gyk9eeOyK0CmHZzsgZfmibkFr6mLrsjSrk6fECJwQ/edit?tab=t.0)
 
-1. Navigate to the frontend directory:
-   ```bash
-   cd frontend
-   ```
+How to run locally
 
-2. Install dependencies:
-   ```bash
-   npm install
-   # or
-   yarn
-   ```
+Backend
+cd backend
+python -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+uvicorn app.main:app --reload --port 8000
 
-3. Configure the backend URL (if different from default):
-   - Open `.env.local`
-   - Update `NEXT_PUBLIC_API_URL` with your backend URL
-   - Example: `NEXT_PUBLIC_API_URL=https://your-backend-url.com`
+Frontend
+cd frontend
+npm install
+echo "NEXT_PUBLIC_API_URL=http://localhost:8000" > .env.local
+npm run dev
+High-level Architecture (AWS)
 
-4. Run the development server:
-   ```bash
-   npm run dev
-   # or
-   yarn dev
-   ```
+Frontend: Next.js static export → S3 (origin) → CloudFront (CDN) → custom domain + TLS
 
-   The frontend will be available at `http://localhost:3000`
+Backend: FastAPI container → ECS Fargate (private subnets) behind ALB (HTTPS)
 
-## Changing the Backend URL
+Images: ECR
 
-To change the backend URL that the frontend connects to:
+DNS: Route 53
 
-1. Open the `.env.local` file in the frontend directory
-2. Update the `NEXT_PUBLIC_API_URL` variable with your new backend URL
-3. Save the file
-4. Restart the Next.js development server for changes to take effect
+TLS: ACM (us-east-1 for CloudFront, ap-south-1 for ALB)
 
-Example:
-```
-NEXT_PUBLIC_API_URL=https://your-new-backend-url.com
-```
+Observability: CloudWatch Logs
 
-## For deployment:
-   ```bash
-   npm run build
-   # or
-   yarn build
-   ```
+Traffic flow
 
-   AND
+User → CloudFront → S3 (frontend)
+Frontend → api-<env>.testingproject.online → ALB → ECS task (FastAPI)
 
-   ```bash
-   npm run start
-   # or
-   yarn start
-   ```
+CI/CD (Two workflows)
+1) Infra Deploy (Manual / One-click)
 
-   The frontend will be available at `http://localhost:3000`
+GitHub Actions workflow: AWS Infra Deploy (Terraform)
 
-## Testing the Integration
+Trigger: workflow_dispatch
 
-1. Ensure both backend and frontend servers are running
-2. Open the frontend in your browser (default: http://localhost:3000)
-3. If everything is working correctly, you should see:
-   - A status message indicating the backend is connected
-   - The message from the backend: "You've successfully integrated the backend!"
-   - The current backend URL being used
+Select env: dev/staging/prod
 
-## API Endpoints
+Runs: terraform init + terraform apply
 
-- `GET /api/health`: Health check endpoint
-  - Returns: `{"status": "healthy", "message": "Backend is running successfully"}`
+2) App Deploy (Automatic)
 
-- `GET /api/message`: Get the integration message
-  - Returns: `{"message": "You've successfully integrated the backend!"}`
+GitHub Actions workflow: AWS App Deploy (ECS + S3)
+
+Trigger: push to dev, staging, main
+
+Backend: build/push image to ECR → new task definition revision → update ECS service
+
+Frontend: build export → upload to S3 → CloudFront invalidation
+
+IaC & State
+
+Terraform used for infra
+
+Remote state stored in S3
+
+Separate state per environment (dev/staging/prod)
