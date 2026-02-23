@@ -1,0 +1,119 @@
+name: AWS App Deploy (ECS + S3)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [ "dev", "staging", "main" ]
+
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set env vars based on branch
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+
+          if [ "$BRANCH" = "dev" ]; then
+            echo "API_URL=https://api-dev.testingproject.online" >> $GITHUB_ENV
+            echo "ECR_REPO_URL=${{ secrets.DEV_ECR_REPO_URL }}" >> $GITHUB_ENV
+            echo "ECS_CLUSTER=${{ secrets.DEV_ECS_CLUSTER }}" >> $GITHUB_ENV
+            echo "ECS_SERVICE=${{ secrets.DEV_ECS_SERVICE }}" >> $GITHUB_ENV
+            echo "TASK_FAMILY=${{ secrets.DEV_TASK_FAMILY }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.DEV_S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.DEV_CLOUDFRONT_ID }}" >> $GITHUB_ENV
+            echo "IMAGE_TAG=dev" >> $GITHUB_ENV
+
+          elif [ "$BRANCH" = "staging" ]; then
+            echo "API_URL=https://api-staging.testingproject.online" >> $GITHUB_ENV
+            echo "ECR_REPO_URL=${{ secrets.STG_ECR_REPO_URL }}" >> $GITHUB_ENV
+            echo "ECS_CLUSTER=${{ secrets.STG_ECS_CLUSTER }}" >> $GITHUB_ENV
+            echo "ECS_SERVICE=${{ secrets.STG_ECS_SERVICE }}" >> $GITHUB_ENV
+            echo "TASK_FAMILY=${{ secrets.STG_TASK_FAMILY }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.STG_S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.STG_CLOUDFRONT_ID }}" >> $GITHUB_ENV
+            echo "IMAGE_TAG=staging" >> $GITHUB_ENV
+
+          elif [ "$BRANCH" = "main" ]; then
+            echo "API_URL=https://api.testingproject.online" >> $GITHUB_ENV
+            echo "ECR_REPO_URL=${{ secrets.PROD_ECR_REPO_URL }}" >> $GITHUB_ENV
+            echo "ECS_CLUSTER=${{ secrets.PROD_ECS_CLUSTER }}" >> $GITHUB_ENV
+            echo "ECS_SERVICE=${{ secrets.PROD_ECS_SERVICE }}" >> $GITHUB_ENV
+            echo "TASK_FAMILY=${{ secrets.PROD_TASK_FAMILY }}" >> $GITHUB_ENV
+            echo "S3_BUCKET=${{ secrets.PROD_S3_BUCKET }}" >> $GITHUB_ENV
+            echo "CLOUDFRONT_ID=${{ secrets.PROD_CLOUDFRONT_ID }}" >> $GITHUB_ENV
+            echo "IMAGE_TAG=prod" >> $GITHUB_ENV
+          else
+            echo "Unsupported branch: $BRANCH"
+            exit 1
+          fi
+
+      - name: Configure AWS (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ secrets.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build & Push Backend
+        working-directory: backend
+        run: |
+          IMAGE_URI="${ECR_REPO_URL}:${IMAGE_TAG}-${GITHUB_SHA}"
+          docker build -t "$IMAGE_URI" .
+          docker push "$IMAGE_URI"
+          echo "IMAGE_URI=$IMAGE_URI" >> $GITHUB_ENV
+
+      - name: Deploy Backend to ECS
+        run: |
+          aws ecs describe-task-definition \
+            --task-definition "$TASK_FAMILY" \
+            --query taskDefinition \
+            --output json > taskdef.json
+
+          jq --arg IMG "$IMAGE_URI" '
+            del(.taskDefinitionArn,.revision,.status,.requiresAttributes,.compatibilities,.registeredAt,.registeredBy)
+            | .containerDefinitions[0].image = $IMG
+          ' taskdef.json > new-taskdef.json
+
+          NEW_TD_ARN=$(aws ecs register-task-definition \
+            --cli-input-json file://new-taskdef.json \
+            --query taskDefinition.taskDefinitionArn \
+            --output text)
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service "$ECS_SERVICE" \
+            --task-definition "$NEW_TD_ARN"
+
+          aws ecs wait services-stable --cluster "$ECS_CLUSTER" --services "$ECS_SERVICE"
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "18"
+
+      - name: Install Frontend Deps
+        working-directory: frontend
+        run: npm ci
+
+      - name: Build Frontend (static)
+        working-directory: frontend
+        run: |
+          echo "NEXT_PUBLIC_API_URL=${API_URL}" > .env.local
+          npm run build
+
+      - name: Upload Frontend to S3
+        run: |
+          aws s3 sync frontend/out "s3://${S3_BUCKET}" --delete
+
+      - name: Invalidate CloudFront
+        run: |
+          aws cloudfront create-invalidation --distribution-id "${CLOUDFRONT_ID}" --paths "/*"
